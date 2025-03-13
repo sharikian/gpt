@@ -44,41 +44,47 @@ def get_request():
 # Generate streamed response (mimics OpenAI's streaming format)
 def generate_stream(messages):
     response = ChatCompletion.create(
-        model=models.claude_3_5_sonnet,  # Your original Claude model
+        model=models.claude_3_5_sonnet,
         messages=messages,
         stream=True,
     )
     for chunk in response:
+        # Extract content from chunk if it's an object
+        content = getattr(chunk, 'content', str(chunk))
+        
         # Format each chunk as an SSE event matching OpenAI's structure
-        yield f"data: {dumps({'choices': [{'delta': {'content': chunk}}]})}\n\n"
+        yield f"data: {dumps({'choices': [{'delta': {'content': content}}]})}\n\n"
     # Signal the end of the stream
     yield "data: [DONE]\n\n"
 
 # Generate full (non-streamed) response (mimics OpenAI's JSON format)
 def generate_full_response(messages):
     response = ChatCompletion.create(
-        model=models.claude_3_5_sonnet,  # Your original Claude model
+        model=models.claude_3_5_sonnet,
         messages=messages,
         stream=False,
     )
+    # Extract content from response if it's an object
+    content = getattr(response, 'content', str(response))
+    
     # Return a response object matching OpenAI's structure
     return {
-        "id": f"chatcmpl-{uuid4().hex}",  # Unique ID
+        "id": f"chatcmpl-{uuid4().hex}",
         "object": "chat.completion",
-        "created": int(time.time()),  # Unix timestamp
-        "model": "claude-3-5-sonnet-20241022",  # Model name in response
+        "created": int(time.time()),
+        "model": "claude-3-5-sonnet-20241022",
         "choices": [{
             "index": 0,
             "message": {
                 "role": "assistant",
-                "content": response
+                "content": content
             },
-            "finish_reason": "stop"  # Reason for completion
+            "finish_reason": "stop"
         }],
         "usage": {
-            "prompt_tokens": 25,  # Placeholder (adjust as needed)
-            "completion_tokens": 15,  # Placeholder (adjust as needed)
-            "total_tokens": 40  # Placeholder (adjust as needed)
+            "prompt_tokens": 25,
+            "completion_tokens": 15,
+            "total_tokens": 40
         }
     }
 
