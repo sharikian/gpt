@@ -8,7 +8,7 @@ from uuid import uuid4
 from shutil import rmtree
 from os import path
 import atexit
-from asgiref.wsgi import WsgiToAsgi
+# from asgiref.wsgi import WsgiToAsgi
 
 app = Flask(__name__)
 CORS(app)
@@ -330,9 +330,9 @@ def show_modesl():
         ]
         }
 
-#if __name__ == '__main__':
-#    app.run(port=9889, debug=True)
+if __name__ == '__main__':
+   app.run(port=9889, debug=True)
 
-asgi = WsgiToAsgi(app)
+# asgi = WsgiToAsgi(app)
 
 # uvicorn app:asgi_app --host 0.0.0.0 --port 5000
