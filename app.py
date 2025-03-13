@@ -36,7 +36,7 @@ def get_request():
         })
 
     # Return streamed or full response based on 'stream' flag
-    if stream:
+    if not stream:
         return Response(stream_with_context(generate_stream(messages)), mimetype='text/event-stream')
     else:
         return jsonify(generate_full_response(messages))
