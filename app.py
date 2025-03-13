@@ -44,14 +44,17 @@ def get_request():
 # Generate streamed response (mimics OpenAI's streaming format)
 def generate_stream(messages):
     response = ChatCompletion.create(
-        model=models.claude_3_5_sonnet,  # Your original Claude model
+        model=models.claude_3_5_sonnet,
         messages=messages,
         stream=True,
     )
     for chunk in response:
-        # Format each chunk as an SSE event matching OpenAI's structure
-        yield f"data: {dumps({'choices': [{'delta': {'content': chunk}}]})}\n\n"
-    # Signal the end of the stream
+        if isinstance(chunk, str):
+            yield f"data: {dumps({'choices': [{'delta': {'content': chunk}}]})}\n\n"
+        else:
+            # Try common attributes or fall back to string conversion
+            content = getattr(chunk, 'content', getattr(chunk, 'text', str(chunk)))
+            yield f"data: {dumps({'choices': [{'delta': {'content': content}}]})}\n\n"
     yield "data: [DONE]\n\n"
 
 # Generate full (non-streamed) response (mimics OpenAI's JSON format)
