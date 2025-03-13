@@ -1,7 +1,8 @@
-# pip install asgiref uvicorn
+# pip install asgiref uvicorn flask flask-cors g4f
 from flask import Flask, Response, request, stream_with_context, jsonify
 from flask_cors import CORS
-from g4f import ChatCompletion, models
+from g4f import ChatCompletion, models, Provider
+from g4f.Provider.base_provider import BaseProvider
 from json import dumps
 import time
 from uuid import uuid4
@@ -9,9 +10,15 @@ from shutil import rmtree
 from os import path
 import atexit
 from asgiref.wsgi import WsgiToAsgi
+import logging
+from typing import List
 
 app = Flask(__name__)
 CORS(app)
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Cleanup function for cookies directory
 @atexit.register
@@ -19,74 +26,140 @@ def remove_cookie():
     if path.exists(cookie := 'har_and_cookies'):
         rmtree(cookie)
 
+# Configure providers
+ACTIVE_PROVIDERS = [
+    Provider.Copilot,
+    Provider.Yqcloud,
+    Provider.ChatGptEs,
+    Provider.PollinationsAI,
+    Provider.Glider,
+    Provider.Liaobots,
+    Provider.Phind,
+]
+
+class AutoProvider:
+    def __init__(self, providers: List[BaseProvider]):
+        self.providers = providers
+        self.current_provider = None
+        self.last_failure = {}
+        self.retry_delay = 300  # 5 minutes in seconds
+
+    def get_provider(self):
+        current_time = time.time()
+        
+        # Try current provider first if available
+        if self.current_provider:
+            last_fail_time = self.last_failure.get(self.current_provider.__name__, 0)
+            if current_time - last_fail_time > self.retry_delay:
+                return self.current_provider
+            self.current_provider = None
+            
+        # Find a working provider
+        for provider in self.providers:
+            last_fail_time = self.last_failure.get(provider.__name__, 0)
+            if current_time - last_fail_time > self.retry_delay:
+                self.current_provider = provider
+                return provider
+        raise Exception("All providers are temporarily unavailable")
+
+    def mark_failed(self, provider: BaseProvider):
+        self.last_failure[provider.__name__] = time.time()
+        self.current_provider = None
+
+auto_provider = AutoProvider(ACTIVE_PROVIDERS)
+
 # Define the /chat/completions endpoint
 @app.route('/chat/completions', methods=['POST'])
 def get_request():
-    # Parse the incoming JSON request
-    jsong = request.json
-    messages = jsong.get('messages', [])  # List of message objects
-    model = jsong.get('model', 'claude-3-5-sonnet-20241022')  # Default model name
-    stream = jsong.get('stream', False)  # Streaming option
+    try:
+        jsong = request.json
+        messages = jsong.get('messages', [])
+        model = jsong.get('model', 'gpt-4')
+        stream = jsong.get('stream', False)
 
-    # Handle system message if provided (OpenAI-style)
-    if 'system' in jsong:
-        messages.insert(0, {
-            "role": "system",
-            "content": jsong['system']
-        })
+        if 'system' in jsong:
+            messages.insert(0, {"role": "system", "content": jsong['system']})
 
-    # Return streamed or full response based on 'stream' flag
-    if stream:
-        return Response(stream_with_context(generate_stream(messages)), mimetype='text/event-stream')
-    else:
-        return jsonify(generate_full_response(messages))
-
-# Generate streamed response (mimics OpenAI's streaming format)
-def generate_stream(messages):
-    response = ChatCompletion.create(
-        model=models.claude_3_5_sonnet,
-        messages=messages,
-        stream=True,
-    )
-    for chunk in response:
-        # Extract content from chunk if it's an object
-        content = getattr(chunk, 'content', str(chunk))
-        
-        # Format each chunk as an SSE event matching OpenAI's structure
-        yield f"data: {dumps({'choices': [{'delta': {'content': content}}]})}\n\n"
-    # Signal the end of the stream
-    yield "data: [DONE]\n\n"
-
-# Generate full (non-streamed) response (mimics OpenAI's JSON format)
-def generate_full_response(messages):
-    response = ChatCompletion.create(
-        model=models.claude_3_5_sonnet,
-        messages=messages,
-        stream=False,
-    )
-    # Extract content from response if it's an object
-    content = getattr(response, 'content', str(response))
+        if stream:
+            return Response(stream_with_context(generate_stream(messages)), 
+                          mimetype='text/event-stream')
+        else:
+            return jsonify(generate_full_response(messages))
     
-    # Return a response object matching OpenAI's structure
-    return {
-        "id": f"chatcmpl-{uuid4().hex}",
-        "object": "chat.completion",
-        "created": int(time.time()),
-        "model": "claude-3-5-sonnet-20241022",
-        "choices": [{
-            "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": content
-            },
-            "finish_reason": "stop"
-        }],
-        "usage": {
-            "prompt_tokens": 25,
-            "completion_tokens": 15,
-            "total_tokens": 40
-        }
-    }
+    except Exception as e:
+        logger.error(f"API Error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+def generate_stream(messages):
+    retries = 3
+    for attempt in range(retries):
+        provider = auto_provider.get_provider()
+        try:
+            logger.info(f"Trying provider: {provider.__name__}")
+            
+            response = ChatCompletion.create(
+                model=models.gpt_4,
+                messages=messages,
+                stream=True,
+                provider=provider,
+                timeout=30
+            )
+            
+            for chunk in response:
+                content = getattr(chunk, 'content', str(chunk))
+                yield f"data: {dumps({'choices': [{'delta': {'content': content}}]})}\n\n"
+            yield "data: [DONE]\n\n"
+            return
+            
+        except Exception as e:
+            logger.warning(f"Provider {provider.__name__} failed: {str(e)}")
+            auto_provider.mark_failed(provider)
+            if attempt < retries - 1:
+                delay = 2 ** attempt
+                logger.info(f"Retrying in {delay} seconds...")
+                time.sleep(delay)
+            else:
+                yield f"data: {dumps({'error': 'All providers failed'})}\n\n"
+                yield "data: [DONE]\n\n"
+                raise
+
+def generate_full_response(messages):
+    retries = 3
+    for attempt in range(retries):
+        provider = auto_provider.get_provider()
+        try:
+            logger.info(f"Trying provider: {provider.__name__}")
+            
+            response = ChatCompletion.create(
+                model=models.gpt_4,
+                messages=messages,
+                stream=False,
+                provider=provider,
+                timeout=30
+            )
+            
+            content = getattr(response, 'content', str(response))
+            return {
+                "id": f"chatcmpl-{uuid4().hex}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": "gpt-4",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": content},
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 25, "completion_tokens": 15, "total_tokens": 40}
+            }
+            
+        except Exception as e:
+            logger.warning(f"Provider {provider.__name__} failed: {str(e)}")
+            auto_provider.mark_failed(provider)
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            raise
+
 
 @app.route('/models')
 def show_modesl():
@@ -340,4 +413,6 @@ def show_modesl():
 
 asgi = WsgiToAsgi(app)
 
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
 # uvicorn app:asgi_app --host 0.0.0.0 --port 5000
