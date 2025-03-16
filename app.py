@@ -77,24 +77,6 @@ def get_request():
         model = jsong.get('model', 'gpt-4')
         stream = jsong.get('stream', False)
 
-        # Parse messages if it's a single string containing "System:" and "Human:"
-        if len(messages) == 1 and isinstance(messages[0], str):
-            full_message = messages[0]
-            human_index = full_message.find("Human:")
-            if human_index != -1:
-                system_part = full_message[:human_index].strip()
-                human_part = full_message[human_index + len("Human:"):].strip()
-                if system_part.startswith("System:"):
-                    system_content = system_part[len("System:"):].strip()
-                else:
-                    system_content = system_part
-                messages = [
-                    {"role": "system", "content": system_content},
-                    {"role": "user", "content": human_part}
-                ]
-            else:
-                messages = [{"role": "user", "content": full_message}]
-        
         if 'system' in jsong:
             messages.insert(0, {"role": "system", "content": jsong['system']})
 
@@ -107,7 +89,6 @@ def get_request():
     except Exception as e:
         logger.error(f"API Error: {str(e)}")
         return jsonify({"error": str(e)}), 500
-    
 
 def generate_stream(messages):
     retries = 3
@@ -117,7 +98,7 @@ def generate_stream(messages):
             logger.info(f"Trying provider: {provider.__name__}")
             
             response = ChatCompletion.create(
-                model=models.gpt_4,
+                model=models.gpt_4o,
                 messages=messages,
                 stream=True,
                 provider=provider,
@@ -150,7 +131,7 @@ def generate_full_response(messages):
             logger.info(f"Trying provider: {provider.__name__}")
             
             response = ChatCompletion.create(
-                model=models.gpt_4,
+                model=models.gpt_4o,
                 messages=messages,
                 stream=False,
                 provider=provider,
